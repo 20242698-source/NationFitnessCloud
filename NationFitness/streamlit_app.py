@@ -2,10 +2,9 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import os
+import re
 from datetime import datetime, timedelta
 import database_manager as db
-from fpdf import FPDF, XPos, YPos  # <-- NUEVO: para generar PDFs
-import base64          # <-- NUEVO: para descarga en ciertos casos (opcional)
 
 # Configuración de la página
 st.set_page_config(page_title="Nation Fitness", layout="wide", initial_sidebar_state="expanded")
@@ -33,39 +32,12 @@ def logout():
     st.session_state.username = ""
     st.session_state.rol = ""
 
-# ==================== NUEVA FUNCIÓN PARA GENERAR PDF ====================
-def generar_pdf_tabla(titulo, encabezados, datos):
-    """
-    Genera un PDF con una tabla.
-    Retorna bytes listos para st.download_button.
-    """
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, titulo, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
-    pdf.ln(5)
-    
-    # Ancho de columnas
-    epw = pdf.w - 2 * pdf.l_margin
-    col_width = epw / len(encabezados)
-    row_height = 8
-    
-    # Encabezados
-    pdf.set_font("Helvetica", "B", 10)
-    for enc in encabezados:
-        pdf.cell(col_width, row_height, enc, border=1, align='C')
-    pdf.ln(row_height)
-    
-    # Datos
-    pdf.set_font("Helvetica", "", 9)
-    for fila in datos:
-        for item in fila:
-            texto = str(item) if item is not None else ""
-            pdf.cell(col_width, row_height, texto, border=1, align='L')
-        pdf.ln(row_height)
-    
-    # output(dest='S') ya retorna bytes, no necesita encode
-    return pdf.output(dest='S')
+# ==================== FUNCIÓN DE VALIDACIÓN DE TELÉFONO ====================
+def validar_telefono(telefono):
+    """Verifica que el teléfono tenga exactamente 10 dígitos numéricos."""
+    if not telefono:
+        return True  # Permitir vacío? Depende. Lo dejamos opcional, pero si se ingresa debe tener 10 dígitos.
+    return bool(re.fullmatch(r"\d{10}", telefono))
 
 # ==================== PANTALLA DE LOGIN ====================
 if not st.session_state.logged_in:
@@ -112,7 +84,7 @@ def main_app():
             "🏠 Dashboard",
             "👥 Socios",
             "📅 Membresías",
-            "💰 Catálogo de planes",  # solo lectura
+            "💰 Catálogo de planes",
             "📊 Reportes",
             "📈 Contabilidad"
         ]
@@ -156,19 +128,6 @@ def main_app():
             if socios:
                 df_socios = pd.DataFrame(socios, columns=["ID", "Clave", "Nombre", "Paterno", "Materno", "Teléfono", "Email", "Observaciones", "Fecha creación", "Estado", "Vencimiento"])
                 st.dataframe(df_socios, width='stretch')
-                
-                # --- NUEVO BOTÓN PARA EXPORTAR SOCIOS A PDF ---
-                if st.button("📄 Exportar lista completa de socios a PDF"):
-                    encabezados_pdf = ["ID", "Clave", "Nombre", "Paterno", "Materno", "Teléfono", "Email", "Observaciones", "Fecha creación", "Estado", "Vencimiento"]
-                    pdf_bytes = generar_pdf_tabla("Lista de Socios - Nation Fitness", encabezados_pdf, socios)
-                    st.download_button(
-                        label="Descargar PDF",
-                        data=pdf_bytes,
-                        file_name="socios_completo.pdf",
-                        mime="application/pdf"
-                    )
-                # --- FIN NUEVO ---
-                
                 # Búsqueda
                 busqueda = st.text_input("Buscar socio (nombre, apellido o clave)")
                 if busqueda:
@@ -187,13 +146,20 @@ def main_app():
                     paterno = st.text_input("Apellido paterno")
                     materno = st.text_input("Apellido materno")
                 with col2:
-                    telefono = st.text_input("Teléfono")
+                    telefono = st.text_input("Teléfono (10 dígitos, solo números)")
                     email = st.text_input("Email")
                     observaciones = st.text_area("Observaciones")
                 submit = st.form_submit_button("Registrar socio")
                 if submit:
+                    # Validaciones
+                    errores = []
                     if not clave or not nombre:
-                        st.error("Clave y nombre son obligatorios")
+                        errores.append("Clave y nombre son obligatorios.")
+                    if telefono and not validar_telefono(telefono):
+                        errores.append("El teléfono debe tener exactamente 10 dígitos numéricos.")
+                    if errores:
+                        for err in errores:
+                            st.error(err)
                     else:
                         # Verificar duplicado
                         if db.existe_socio_duplicado(clave, nombre, paterno, materno):
@@ -214,17 +180,21 @@ def main_app():
                         nombre = st.text_input("Nombre", socio_seleccionado[2])
                         paterno = st.text_input("Apellido paterno", socio_seleccionado[3])
                         materno = st.text_input("Apellido materno", socio_seleccionado[4])
-                        telefono = st.text_input("Teléfono", socio_seleccionado[5])
+                        telefono = st.text_input("Teléfono (10 dígitos)", socio_seleccionado[5])
                         email = st.text_input("Email", socio_seleccionado[6])
                         observaciones = st.text_area("Observaciones", socio_seleccionado[7])
                         col1, col2 = st.columns(2)
                         with col1:
                             if st.form_submit_button("Actualizar"):
-                                if db.actualizar_socio(id_socio, (clave, nombre, paterno, materno, telefono, email, observaciones)):
-                                    st.success("Socio actualizado")
-                                    st.rerun()
+                                # Validar teléfono
+                                if telefono and not validar_telefono(telefono):
+                                    st.error("El teléfono debe tener exactamente 10 dígitos numéricos.")
                                 else:
-                                    st.error("Error al actualizar")
+                                    if db.actualizar_socio(id_socio, (clave, nombre, paterno, materno, telefono, email, observaciones)):
+                                        st.success("Socio actualizado")
+                                        st.rerun()
+                                    else:
+                                        st.error("Error al actualizar")
                         with col2:
                             if st.form_submit_button("Eliminar socio"):
                                 if st.checkbox("Confirmar eliminación permanente"):
@@ -337,18 +307,6 @@ def main_app():
             df_egresos = pd.DataFrame(egresos, columns=["ID", "Concepto", "Monto", "Fecha"])
             st.dataframe(df_egresos, width='stretch')
             
-            # --- NUEVO BOTÓN PARA EXPORTAR EGRESOS A PDF ---
-            if st.button("📄 Exportar todos los egresos a PDF"):
-                encabezados_pdf = ["ID", "Concepto", "Monto", "Fecha"]
-                pdf_bytes = generar_pdf_tabla("Registro de Egresos - Nation Fitness", encabezados_pdf, egresos)
-                st.download_button(
-                    label="Descargar PDF",
-                    data=pdf_bytes,
-                    file_name="egresos_completos.pdf",
-                    mime="application/pdf"
-                )
-            # --- FIN NUEVO ---
-            
             # Editar/eliminar egresos
             st.subheader("Editar/Eliminar")
             egreso_seleccionado = st.selectbox("Seleccionar egreso", egresos, format_func=lambda x: f"{x[1]} - ${x[2]}")
@@ -413,18 +371,6 @@ def main_app():
                     st.dataframe(df, width='stretch')
                     total = df["Monto"].sum()
                     st.metric("Total ingresos", f"${total:,.2f}")
-                    
-                    # --- NUEVO BOTÓN PARA EXPORTAR INGRESOS A PDF ---
-                    if st.button("📄 Exportar ingresos a PDF"):
-                        encabezados_pdf = ["ID", "Clave", "Socio", "Plan", "Monto", "Fecha"]
-                        pdf_bytes = generar_pdf_tabla(f"Ingresos del {desde} al {hasta}", encabezados_pdf, datos)
-                        st.download_button(
-                            label="Descargar PDF",
-                            data=pdf_bytes,
-                            file_name=f"ingresos_{desde}_{hasta}.pdf",
-                            mime="application/pdf"
-                        )
-                    # --- FIN NUEVO ---
                 else:
                     st.info("Sin ingresos en ese período")
             else:
@@ -434,64 +380,41 @@ def main_app():
                     st.dataframe(df, width='stretch')
                     total = df["Monto"].sum()
                     st.metric("Total egresos", f"${total:,.2f}")
-                    
-                    # --- NUEVO BOTÓN PARA EXPORTAR EGRESOS A PDF ---
-                    if st.button("📄 Exportar egresos a PDF"):
-                        encabezados_pdf = ["ID", "Concepto", "Monto", "Fecha"]
-                        pdf_bytes = generar_pdf_tabla(f"Egresos del {desde} al {hasta}", encabezados_pdf, datos)
-                        st.download_button(
-                            label="Descargar PDF",
-                            data=pdf_bytes,
-                            file_name=f"egresos_{desde}_{hasta}.pdf",
-                            mime="application/pdf"
-                        )
-                    # --- FIN NUEVO ---
                 else:
                     st.info("Sin egresos en ese período")
-
-    # ================ CONTABILIDAD ===================
+    
+    # ==================== CONTABILIDAD ====================
     elif seleccion == "📈 Contabilidad":
         st.title("📊 Balance General - Contabilidad")
         st.markdown("Visualiza ingresos, egresos y utilidad con gráficos interactivos.")
         
-        # Filtros de fecha
         col1, col2 = st.columns(2)
         with col1:
             fecha_desde = st.date_input("Desde", datetime.now().replace(day=1))
         with col2:
             fecha_hasta = st.date_input("Hasta", datetime.now())
         
-        # Botón para actualizar
         if st.button("Actualizar balance"):
-            # Convertir a string YYYY-MM-DD
             desde_str = fecha_desde.strftime("%Y-%m-%d")
             hasta_str = fecha_hasta.strftime("%Y-%m-%d")
             
-            # Obtener datos de ingresos y egresos
             ingresos_raw = db.obtener_ingresos_filtrados(desde_str, hasta_str)
             egresos_raw = db.obtener_egresos_filtrados(desde_str, hasta_str)
             
-            # Calcular totales
             total_ingresos = sum(row[4] for row in ingresos_raw) if ingresos_raw else 0
             total_egresos = sum(row[2] for row in egresos_raw) if egresos_raw else 0
             utilidad = total_ingresos - total_egresos
             
-            # Mostrar tarjetas de resumen
             col_a, col_b, col_c = st.columns(3)
             col_a.metric("💰 Ingresos totales", f"${total_ingresos:,.2f}")
             col_b.metric("💸 Egresos totales", f"${total_egresos:,.2f}")
-            col_c.metric("📈 Utilidad neta", f"${utilidad:,.2f}", 
-                        delta_color="normal" if utilidad >= 0 else "inverse")
+            col_c.metric("📈 Utilidad neta", f"${utilidad:,.2f}", delta_color="normal" if utilidad >= 0 else "inverse")
             
-            # --- GRÁFICO 1: Evolución mensual (ingresos vs egresos) ---
             st.subheader("📅 Evolución mensual")
-            # Procesar ingresos por mes
             if ingresos_raw or egresos_raw:
-                # Crear DataFrames
                 df_ing = pd.DataFrame(ingresos_raw, columns=["ID", "Clave", "Socio", "Plan", "Monto", "Fecha"]) if ingresos_raw else pd.DataFrame(columns=["Fecha", "Monto"])
                 df_egr = pd.DataFrame(egresos_raw, columns=["ID", "Concepto", "Monto", "Fecha"]) if egresos_raw else pd.DataFrame(columns=["Fecha", "Monto"])
                 
-                # Convertir a datetime
                 if not df_ing.empty:
                     df_ing["Fecha"] = pd.to_datetime(df_ing["Fecha"])
                     df_ing["Mes"] = df_ing["Fecha"].dt.to_period("M").astype(str)
@@ -506,7 +429,6 @@ def main_app():
                 else:
                     egresos_mensuales = pd.DataFrame(columns=["Mes", "Monto"])
                 
-                # Combinar en un solo DataFrame
                 meses = set(ingresos_mensuales["Mes"]).union(set(egresos_mensuales["Mes"]))
                 balance_mensual = pd.DataFrame({"Mes": sorted(meses)})
                 balance_mensual = balance_mensual.merge(ingresos_mensuales, on="Mes", how="left").rename(columns={"Monto": "Ingresos"})
@@ -514,41 +436,28 @@ def main_app():
                 balance_mensual.fillna(0, inplace=True)
                 balance_mensual["Utilidad"] = balance_mensual["Ingresos"] - balance_mensual["Egresos"]
                 
-                # Gráfico de barras agrupadas
-                fig_bar = px.bar(balance_mensual, x="Mes", y=["Ingresos", "Egresos"], 
-                                barmode="group", title="Ingresos vs Egresos por mes",
-                                labels={"value": "Monto ($)", "variable": "Tipo"})
-                st.plotly_chart(fig_bar, width='stretch')
+                fig_bar = px.bar(balance_mensual, x="Mes", y=["Ingresos", "Egresos"], barmode="group", title="Ingresos vs Egresos por mes", labels={"value": "Monto ($)", "variable": "Tipo"})
+                st.plotly_chart(fig_bar, use_container_width=True)
                 
-                # Línea de utilidad
-                fig_line = px.line(balance_mensual, x="Mes", y="Utilidad", 
-                                markers=True, title="Utilidad mensual",
-                                labels={"Utilidad": "Utilidad ($)"})
+                fig_line = px.line(balance_mensual, x="Mes", y="Utilidad", markers=True, title="Utilidad mensual", labels={"Utilidad": "Utilidad ($)"})
                 fig_line.add_hline(y=0, line_dash="dash", line_color="red")
-                st.plotly_chart(fig_line, width='stretch')
+                st.plotly_chart(fig_line, use_container_width=True)
             
-            # --- GRÁFICO 2: Distribución de ingresos por tipo de membresía (solo si hay datos)---
             if ingresos_raw:
                 st.subheader("🥧 Ingresos por tipo de membresía")
                 df_ing_tipo = pd.DataFrame(ingresos_raw, columns=["ID", "Clave", "Socio", "Plan", "Monto", "Fecha"])
                 ingresos_por_plan = df_ing_tipo.groupby("Plan")["Monto"].sum().reset_index()
-                fig_pie = px.pie(ingresos_por_plan, values="Monto", names="Plan", 
-                                title="Composición de ingresos por plan",
-                                hole=0.4)
-                st.plotly_chart(fig_pie, width='stretch')
+                fig_pie = px.pie(ingresos_por_plan, values="Monto", names="Plan", title="Composición de ingresos por plan", hole=0.4)
+                st.plotly_chart(fig_pie, use_container_width=True)
             
-            # --- GRÁFICO 3: Principales egresos (top 5) ---
             if egresos_raw:
                 st.subheader("📉 Principales egresos")
                 df_egr_top = pd.DataFrame(egresos_raw, columns=["ID", "Concepto", "Monto", "Fecha"])
                 top_egresos = df_egr_top.groupby("Concepto")["Monto"].sum().reset_index().sort_values("Monto", ascending=False).head(5)
-                fig_horiz = px.bar(top_egresos, x="Monto", y="Concepto", orientation="h",
-                                title="Top 5 conceptos de gasto",
-                                labels={"Monto": "Monto ($)", "Concepto": "Concepto"})
-                st.plotly_chart(fig_horiz, width='stretch')
+                fig_horiz = px.bar(top_egresos, x="Monto", y="Concepto", orientation="h", title="Top 5 conceptos de gasto", labels={"Monto": "Monto ($)", "Concepto": "Concepto"})
+                st.plotly_chart(fig_horiz, use_container_width=True)
         else:
             st.info("Selecciona un rango de fechas y presiona 'Actualizar balance' para ver los gráficos.")
 
-# Ejecutar la app principal
 if __name__ == "__main__":
     main_app()
